@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Bizim eklemeler
+.env
+*.db
+.DS_Store
+.streamlit/secrets.toml
+data/sample_images/
+*.pt
+runs/
+.vs/
