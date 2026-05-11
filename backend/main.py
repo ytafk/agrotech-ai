@@ -57,9 +57,7 @@ def health():
 @app.post("/analyze", response_model=AnalysisResult)
 async def analyze(file: UploadFile = File(...)):
     """
-    Fotoğraf alır, kalite analizi yapar.
-    Cumartesi: vision_service hazırsa onu kullanır, değilse dummy döner.
-    Pazartesi: ajan raporu da eklenecek.
+    Fotoğraf alır, vision + quality agent ile analiz yapar.
     """
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
@@ -71,7 +69,7 @@ async def analyze(file: UploadFile = File(...)):
     print(f"[/analyze] Fotoğraf alındı: {file.filename}, "
           f"{len(image_bytes) / 1024:.1f} KB")
 
-    # vision_service henüz hazır olmayabilir — try/except ile dummy fallback
+    # 1. Vision analizi
     vision_result = None
     try:
         from backend.services import vision_service
@@ -95,6 +93,16 @@ async def analyze(file: UploadFile = File(...)):
             ],
         }
 
+    # 2. Quality Agent
+    agent_summary = None
+    try:
+        from backend.agents import quality_agent
+        quality_report = quality_agent.analyze_quality(vision_result)
+        agent_summary = quality_report.get("summary")
+        print(f"[/analyze] Quality Agent: {agent_summary[:80] if agent_summary else 'none'}...")
+    except Exception as e:
+        print(f"[/analyze] Quality Agent hatası: {e}")
+
     return AnalysisResult(
         total_items=vision_result["total_items"],
         fresh=vision_result["fresh"],
@@ -102,5 +110,5 @@ async def analyze(file: UploadFile = File(...)):
         fire_rate=vision_result["fire_rate"],
         estimated_loss_tl=vision_result["estimated_loss_tl"],
         detections=[Detection(**d) for d in vision_result["detections"]],
-        agent_report=None,
+        agent_report=agent_summary,
     )
