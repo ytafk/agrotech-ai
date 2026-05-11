@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -28,6 +29,29 @@ class Detection(BaseModel):
     confidence: float
     bbox: List[float]  # [x, y, w, h]
 
+class Supplier(BaseModel):
+    id: str
+    name: str
+
+
+class Facility(BaseModel):
+    id: str
+    type: str
+    name: str
+    accepts: List[str]
+
+
+class EmailSendRequest(BaseModel):
+    supplier_id: str
+    subject: str
+    body: str
+    email_type: str = "iade"  # "iade" veya "degisim"
+
+
+class EmailSendResponse(BaseModel):
+    status: str
+    timestamp: str
+    supplier_name: str
 
 class AnalysisResult(BaseModel):
     total_items: int
@@ -39,6 +63,7 @@ class AnalysisResult(BaseModel):
     agent_report: Optional[str] = None
     quality_report: Optional[dict] = None
     supplier_email: Optional[dict] = None
+    logistics_routing: Optional[dict] = None 
 
 # --- Endpoint'ler ---
 @app.get("/")
@@ -117,6 +142,16 @@ async def analyze(file: UploadFile = File(...)):
         except Exception as e:
             print(f"[/analyze] Communication Agent hatası: {e}")
 
+       # 4. Logistics Agent — sıfır atık yönlendirmesi
+    logistics_routing = None
+    if quality_report and quality_report.get("categories"):
+        try:
+            from backend.agents import logistics_agent
+            logistics_routing = logistics_agent.recommend_routing(quality_report)
+            print(f"[/analyze] Logistics: {logistics_routing.get('total_recovery_tl', 0)} TL geri kazanım")
+        except Exception as e:
+            print(f"[/analyze] Logistics Agent hatası: {e}")     
+
     return AnalysisResult(
         total_items=vision_result["total_items"],
         fresh=vision_result["fresh"],
@@ -127,4 +162,71 @@ async def analyze(file: UploadFile = File(...)):
         agent_report=agent_summary,
         quality_report=quality_report,
         supplier_email=supplier_email,
+        logistics_routing=logistics_routing,
     )
+  
+
+# Sabit veri (Pazartesi gerçek DB'ye taşırsak iyi olur)
+SUPPLIERS = [
+    {"id": "sup_001", "name": "Yıldız Üretim A.Ş."},
+    {"id": "sup_002", "name": "Akdeniz Tarım Kooperatifi"},
+    {"id": "sup_003", "name": "Egemen Sebze Meyve"},
+    {"id": "sup_004", "name": "Antalya Sera Ürünleri"},
+]
+
+FACILITIES = [
+    {"id": "fac_salca", "type": "salça", "name": "Salça Fabrikası", "accepts": ["ezik", "lekeli"]},
+    {"id": "fac_suyu", "type": "meyve_suyu", "name": "Meyve Suyu Fabrikası", "accepts": ["ezik"]},
+    {"id": "fac_tursu", "type": "tursu", "name": "Turşu Fabrikası", "accepts": ["lekeli"]},
+    {"id": "fac_kompost", "type": "kompost", "name": "Kompost Tesisi", "accepts": ["cürük"]},
+]
+
+# In-memory mail log (Pazartesi SQLite'a taşıyacağız)
+SENT_EMAILS = []
+
+
+@app.get("/suppliers", response_model=List[Supplier])
+def list_suppliers():
+    """Tedarikçi listesi — Flutter dropdown'ı için."""
+    return SUPPLIERS
+
+
+@app.get("/facilities", response_model=List[Facility])
+def list_facilities():
+    """İşleme tesisleri listesi — sıfır atık yönlendirmesi için."""
+    return FACILITIES
+
+
+@app.post("/email/send", response_model=EmailSendResponse)
+async def send_email(req: EmailSendRequest):
+    """
+    Onaylanmış mail taslağını 'gönderir' (demo için log + kayıt).
+    Gerçek SMTP entegrasyonu Pazartesi eklenecek.
+    """
+    supplier = next((s for s in SUPPLIERS if s["id"] == req.supplier_id), None)
+    if supplier is None:
+        raise HTTPException(status_code=404, detail=f"Tedarikçi bulunamadı: {req.supplier_id}")
+
+    timestamp = datetime.now().isoformat()
+    record = {
+        "supplier_id": req.supplier_id,
+        "supplier_name": supplier["name"],
+        "subject": req.subject,
+        "body": req.body,
+        "email_type": req.email_type,
+        "timestamp": timestamp,
+    }
+    SENT_EMAILS.append(record)
+    print(f"[EMAIL SENT] {supplier['name']} → {req.subject}")
+
+    return EmailSendResponse(
+        status="sent",
+        timestamp=timestamp,
+        supplier_name=supplier["name"],
+    )
+
+
+@app.get("/email/history")
+def email_history():
+    """Gönderilen mail geçmişi (yönetici paneli için bonus)."""
+    return SENT_EMAILS
