@@ -33,11 +33,12 @@ class AnalysisResult(BaseModel):
     total_items: int
     fresh: int
     damaged: int
-    fire_rate: float  # 0-1 arası
+    fire_rate: float
     estimated_loss_tl: float
     detections: List[Detection]
-    agent_report: Optional[str] = None  # Pazartesi ajan eklenecek
-
+    agent_report: Optional[str] = None
+    quality_report: Optional[dict] = None
+    supplier_email: Optional[dict] = None
 
 # --- Endpoint'ler ---
 @app.get("/")
@@ -94,6 +95,7 @@ async def analyze(file: UploadFile = File(...)):
         }
 
     # 2. Quality Agent
+    quality_report = None
     agent_summary = None
     try:
         from backend.agents import quality_agent
@@ -103,6 +105,18 @@ async def analyze(file: UploadFile = File(...)):
     except Exception as e:
         print(f"[/analyze] Quality Agent hatası: {e}")
 
+        # 3. Communication Agent — sadece severity yüksekse mail draft et
+    supplier_email = None
+    if quality_report and quality_report.get("severity") in ("medium", "high"):
+        try:
+            from backend.agents import communication_agent
+            supplier_email = communication_agent.draft_supplier_email(
+                quality_report, vision_result, "Tedarikçi A.Ş.", "Agrotech Kooperatifi"
+            )
+            print(f"[/analyze] Mail taslağı hazır: {supplier_email['subject']}")
+        except Exception as e:
+            print(f"[/analyze] Communication Agent hatası: {e}")
+
     return AnalysisResult(
         total_items=vision_result["total_items"],
         fresh=vision_result["fresh"],
@@ -111,4 +125,6 @@ async def analyze(file: UploadFile = File(...)):
         estimated_loss_tl=vision_result["estimated_loss_tl"],
         detections=[Detection(**d) for d in vision_result["detections"]],
         agent_report=agent_summary,
+        quality_report=quality_report,
+        supplier_email=supplier_email,
     )
