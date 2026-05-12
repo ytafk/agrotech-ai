@@ -83,26 +83,22 @@ def health():
 @app.post("/analyze", response_model=AnalysisResult)
 async def analyze(file: UploadFile = File(...)):
     """
-    Fotoğraf alır, vision + quality agent ile analiz yapar.
+    Fotoğraf alır, vision + multi-agent pipeline çalıştırır.
     """
     if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=400,
-            detail="Sadece görüntü dosyaları kabul edilir"
-        )
+        raise HTTPException(status_code=400, detail="Sadece görüntü dosyaları kabul edilir")
 
     image_bytes = await file.read()
-    print(f"[/analyze] Fotoğraf alındı: {file.filename}, "
-          f"{len(image_bytes) / 1024:.1f} KB")
+    print(f"[/analyze] Fotoğraf alındı: {file.filename}, {len(image_bytes) / 1024:.1f} KB")
 
     # 1. Vision analizi
     vision_result = None
     try:
         from backend.services import vision_service
         vision_result = vision_service.detect_quality(image_bytes)
-        print(f"[/analyze] Vision sonucu: total={vision_result['total_items']}")
+        print(f"[/analyze] Vision: total={vision_result['total_items']}, damaged={vision_result['damaged']}")
     except Exception as e:
-        print(f"[/analyze] Vision hatası, dummy döndürülüyor: {e}")
+        print(f"[/analyze] Vision hatası, dummy kullanılıyor: {e}")
 
     if vision_result is None:
         vision_result = {
@@ -119,38 +115,12 @@ async def analyze(file: UploadFile = File(...)):
             ],
         }
 
-    # 2. Quality Agent
-    quality_report = None
-    agent_summary = None
-    try:
-        from backend.agents import quality_agent
-        quality_report = quality_agent.analyze_quality(vision_result)
-        agent_summary = quality_report.get("summary")
-        print(f"[/analyze] Quality Agent: {agent_summary[:80] if agent_summary else 'none'}...")
-    except Exception as e:
-        print(f"[/analyze] Quality Agent hatası: {e}")
+    # 2. Multi-agent pipeline
+    from backend.orchestrator import run_pipeline
+    pipeline_result = run_pipeline(vision_result)
 
-        # 3. Communication Agent — sadece severity yüksekse mail draft et
-    supplier_email = None
-    if quality_report and quality_report.get("severity") in ("medium", "high"):
-        try:
-            from backend.agents import communication_agent
-            supplier_email = communication_agent.draft_supplier_email(
-                quality_report, vision_result, "Tedarikçi A.Ş.", "Agrotech Kooperatifi"
-            )
-            print(f"[/analyze] Mail taslağı hazır: {supplier_email['subject']}")
-        except Exception as e:
-            print(f"[/analyze] Communication Agent hatası: {e}")
-
-       # 4. Logistics Agent — sıfır atık yönlendirmesi
-    logistics_routing = None
-    if quality_report and quality_report.get("categories"):
-        try:
-            from backend.agents import logistics_agent
-            logistics_routing = logistics_agent.recommend_routing(quality_report)
-            print(f"[/analyze] Logistics: {logistics_routing.get('total_recovery_tl', 0)} TL geri kazanım")
-        except Exception as e:
-            print(f"[/analyze] Logistics Agent hatası: {e}")     
+    quality_report = pipeline_result["quality_report"]
+    agent_summary = quality_report.get("summary") if quality_report else None
 
     return AnalysisResult(
         total_items=vision_result["total_items"],
@@ -161,10 +131,9 @@ async def analyze(file: UploadFile = File(...)):
         detections=[Detection(**d) for d in vision_result["detections"]],
         agent_report=agent_summary,
         quality_report=quality_report,
-        supplier_email=supplier_email,
-        logistics_routing=logistics_routing,
+        supplier_email=pipeline_result["supplier_email"],
+        logistics_routing=pipeline_result["logistics_routing"],
     )
-  
 
 # Sabit veri (Pazartesi gerçek DB'ye taşırsak iyi olur)
 SUPPLIERS = [
