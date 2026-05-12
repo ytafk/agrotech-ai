@@ -1,25 +1,21 @@
 """
 Logistics Agent.
 Hasarlı ürün kategorilerine bakarak sıfır atık yönlendirmesi önerir.
+Gemini çağrısı için ortak _gemini_helper'ı kullanır.
 """
-import os
 import json
-from typing import Dict, List
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from typing import Dict
+from backend.agents._gemini_helper import generate_json
 
-load_dotenv()
 
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-# Mevcut tesisler — main.py'deki FACILITIES ile aynı yapı
 AVAILABLE_FACILITIES = [
     {"type": "salça", "name": "Salça Fabrikası", "accepts": ["ezik", "lekeli"], "recovery_rate_tl_per_kg": 4.0},
     {"type": "meyve_suyu", "name": "Meyve Suyu Fabrikası", "accepts": ["ezik"], "recovery_rate_tl_per_kg": 5.5},
     {"type": "tursu", "name": "Turşu Fabrikası", "accepts": ["lekeli"], "recovery_rate_tl_per_kg": 3.0},
     {"type": "kompost", "name": "Kompost Tesisi", "accepts": ["cürük"], "recovery_rate_tl_per_kg": 0.5},
 ]
+
+KG_PER_ITEM = 0.15
 
 LOGISTICS_SYSTEM_PROMPT = """Sen tarım/gıda işletmesi için çalışan sürdürülebilirlik ve lojistik uzmanısın.
 Hasarlı ürünleri çöpe atmak yerine farklı tesislere yönlendirerek atık-değer kazandırırsın.
@@ -45,13 +41,9 @@ Kurallar:
   "sustainability_note": "Yöneticiye 1-2 cümlelik sürdürülebilirlik mesajı"
 }"""
 
-# Ortalama bir ürün ağırlığı (vision_service'deki ile aynı)
-KG_PER_ITEM = 0.15
-
 
 def recommend_routing(quality_report: Dict) -> Dict:
     """Quality raporundaki kategori dağılımına göre lojistik tavsiyesi üretir."""
-    
     categories = quality_report.get("categories", {})
     ezik = categories.get("ezik", 0)
     curuk = categories.get("cürük", 0) or categories.get("curuk", 0)
@@ -76,30 +68,25 @@ Mevcut tesisler:
 
 Bu hasarlı ürünleri uygun tesislere yönlendir, geri kazanım değerini hesapla."""
 
-    try:
-        response = _client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=LOGISTICS_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.3,
-            ),
-        )
-        result = json.loads(response.text)
-        return result
-    except Exception as e:
-        print(f"[LogisticsAgent] Hata: {e}, fallback yönlendirme döndürülüyor")
+    result = generate_json(
+        system_prompt=LOGISTICS_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        temperature=0.3,
+    )
+
+    if result is None or "routings" not in result:
         return _fallback_routing(ezik, curuk, lekeli)
+
+    return result
 
 
 def _fallback_routing(ezik: int, curuk: int, lekeli: int) -> Dict:
-    """Gemini hata verdiğinde basit kural tabanlı yönlendirme."""
+    """Gemini erişilemediğinde basit kural tabanlı yönlendirme."""
     routings = []
-    total_recovery = 0.0
+    total = 0.0
 
     if ezik > 0:
-        recovery = ezik * KG_PER_ITEM * 5.5  # Meyve suyu en karlı
+        recovery = ezik * KG_PER_ITEM * 5.5
         routings.append({
             "category": "ezik",
             "quantity": ezik,
@@ -108,7 +95,7 @@ def _fallback_routing(ezik: int, curuk: int, lekeli: int) -> Dict:
             "estimated_recovery_tl": round(recovery, 2),
             "reasoning": "Ezik ürünler sıvılaştırma sürecine uygundur.",
         })
-        total_recovery += recovery
+        total += recovery
 
     if lekeli > 0:
         recovery = lekeli * KG_PER_ITEM * 4.0
@@ -120,7 +107,7 @@ def _fallback_routing(ezik: int, curuk: int, lekeli: int) -> Dict:
             "estimated_recovery_tl": round(recovery, 2),
             "reasoning": "Lekeli ürünler salça üretiminde sorun yaratmaz.",
         })
-        total_recovery += recovery
+        total += recovery
 
     if curuk > 0:
         recovery = curuk * KG_PER_ITEM * 0.5
@@ -132,22 +119,21 @@ def _fallback_routing(ezik: int, curuk: int, lekeli: int) -> Dict:
             "estimated_recovery_tl": round(recovery, 2),
             "reasoning": "Çürük ürünler kompost yapımında değer kazanır.",
         })
-        total_recovery += recovery
+        total += recovery
 
     return {
         "routings": routings,
-        "total_recovery_tl": round(total_recovery, 2),
-        "sustainability_note": f"Hasarlı ürünlerden {total_recovery:.2f} TL geri kazanım sağlanabilir.",
+        "total_recovery_tl": round(total, 2),
+        "sustainability_note": f"Hasarlı ürünlerden {total:.2f} TL geri kazanım sağlanabilir.",
     }
 
 
 # Test için
 if __name__ == "__main__":
-    test_quality = {
+    test = {
         "summary": "Test",
         "severity": "high",
         "categories": {"ezik": 2, "cürük": 1, "lekeli": 1},
         "recommended_action": "Test",
     }
-    result = recommend_routing(test_quality)
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print(json.dumps(recommend_routing(test), indent=2, ensure_ascii=False))

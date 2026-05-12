@@ -1,18 +1,13 @@
 """
 Communication Agent.
 Quality raporundan tedarikçiye gönderilecek iade maili taslağı üretir.
+Gemini çağrısı için ortak _gemini_helper'ı kullanır.
 """
-import os
 from typing import Dict
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from backend.agents._gemini_helper import generate_json
 
-load_dotenv()
 
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-COMMUNICATION_SYSTEM_PROMPT = """Sen tarım/gıda işletmesi adına tedarikçilerle iletişim kuran profesyonel bir asistansın.
+COMMUNICATION_SYSTEM_PROMPT = """Sen tarım/gıda işletmesi adına tedarikçilerle iletişim kuran profesyonel bir yardımcısın.
 Kalite kontrol raporundan yola çıkarak tedarikçiye gönderilecek bir iade/şikayet maili taslağı hazırlarsın.
 
 Yazım kuralları:
@@ -20,9 +15,10 @@ Yazım kuralları:
 - Net rakamlar kullan (kaç ürün, fire oranı, maddi zarar)
 - Suçlayıcı değil, çözüm odaklı bir ton
 - Konu satırı + selamlama + gövde + kapanış formatında
-- 150-200 kelime arası, uzatma
+- 150-200 kelime arası
 - Sonunda kanıt fotoğrafının ekte olduğunu belirt
-"NOT: Mail sonundaki imzaya KESİNLİKLE 'Asistan' kelimesi koyma; sadece şirket adı olsun."
+- İmzaya KESİNLİKLE 'Asistan' kelimesi koyma; sadece şirket adı olsun
+
 ÇIKTIYI KESİNLİKLE bu JSON formatında ver:
 {
   "subject": "Mail konu satırı",
@@ -56,28 +52,19 @@ Hasar dağılımı: {quality_report.get('categories', {})}
 
 Bu tedarikçiye gönderilecek iade maili taslağını hazırla."""
 
-    import json
+    email = generate_json(
+        system_prompt=COMMUNICATION_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        temperature=0.4,
+    )
 
-    try:
-        response = _client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=COMMUNICATION_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.4,
-            ),
-        )
-        email = json.loads(response.text)
-        if "subject" not in email or "body" not in email:
-            raise ValueError("Eksik alanlar")
-        return email
-    except Exception as e:
-        print(f"[CommunicationAgent] Hata: {e}, fallback mail döndürülüyor")
-        return _fallback_email(quality_report, vision_result, supplier_name, company_name)
+    if email is None or "subject" not in email or "body" not in email:
+        return _fallback_email(vision_result, supplier_name, company_name)
+
+    return email
 
 
-def _fallback_email(quality_report, vision_result, supplier_name, company_name) -> Dict:
+def _fallback_email(vision_result, supplier_name, company_name) -> Dict:
     return {
         "subject": f"İade Talebi — Kalite Sorunu (Fire %{vision_result.get('fire_rate', 0) * 100:.1f})",
         "body": (
@@ -94,22 +81,15 @@ def _fallback_email(quality_report, vision_result, supplier_name, company_name) 
     }
 
 
+# Test için
 if __name__ == "__main__":
     import json
-
-    test_quality = {
+    test_q = {
         "summary": "Bu kasadaki 12 ürünün 4'ü (%33.0) hasarlı, 45.5 TL maddi zarar.",
         "severity": "high",
         "categories": {"ezik": 2, "cürük": 1, "lekeli": 1},
         "recommended_action": "Yüksek fire oranı, taşıma şartları gözden geçirilmeli.",
     }
-    test_vision = {
-        "total_items": 12,
-        "fresh": 8,
-        "damaged": 4,
-        "fire_rate": 0.33,
-        "estimated_loss_tl": 45.5,
-    }
-    result = draft_supplier_email(test_quality, test_vision, "Yıldız Üretim A.Ş.", "Yeşil Kooperatif")
-    print(f"KONU: {result['subject']}\n")
-    print(f"GÖVDE:\n{result['body']}")
+    test_v = {"total_items": 12, "fresh": 8, "damaged": 4, "fire_rate": 0.33, "estimated_loss_tl": 45.5}
+    result = draft_supplier_email(test_q, test_v, "Yıldız Üretim A.Ş.", "Yeşil Kooperatif")
+    print(f"KONU: {result['subject']}\n\nGÖVDE:\n{result['body']}")

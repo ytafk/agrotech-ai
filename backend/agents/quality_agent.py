@@ -1,17 +1,11 @@
 """
 Quality Inspector Agent.
 Vision çıktısını alır, Gemini ile yapılandırılmış kalite raporu üretir.
+Gemini çağrısı için ortak _gemini_helper'ı kullanır (retry logic).
 """
-import os
-import json
 from typing import Dict
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from backend.agents._gemini_helper import generate_json
 
-load_dotenv()
-
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 QUALITY_SYSTEM_PROMPT = """Sen tarım ve gıda işletmeleri için çalışan deneyimli bir kalite kontrol uzmanısın.
 Kasalardan gelen ürün analiz sonuçlarını yorumlayıp yöneticiye somut, eyleme yönelik raporlar sunarsın.
@@ -39,7 +33,6 @@ Görevin:
 
 def analyze_quality(vision_result: Dict) -> Dict:
     """Vision sonucunu alır, Gemini ile yapılandırılmış kalite raporu üretir."""
-
     total = vision_result.get("total_items", 0)
     damaged = vision_result.get("damaged", 0)
     fresh = vision_result.get("fresh", 0)
@@ -55,32 +48,22 @@ def analyze_quality(vision_result: Dict) -> Dict:
 
 Bu kasa için kalite raporunu üret."""
 
-    try:
-        response = _client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=QUALITY_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.3,
-            ),
-        )
-        report = json.loads(response.text)
+    report = generate_json(
+        system_prompt=QUALITY_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        temperature=0.3,
+    )
 
-        # Doğrulama: gerekli alanlar var mı?
-        required = ["summary", "severity", "categories", "recommended_action"]
-        if not all(k in report for k in required):
-            raise ValueError(f"Eksik alanlar: {set(required) - set(report.keys())}")
-
-        return report
-
-    except (json.JSONDecodeError, ValueError, Exception) as e:
-        print(f"[QualityAgent] Hata: {e}, fallback rapor döndürülüyor")
+    # Helper başarısızsa veya eksik alan varsa fallback
+    required = ["summary", "severity", "categories", "recommended_action"]
+    if report is None or not all(k in report for k in required):
         return _fallback_report(vision_result)
+
+    return report
 
 
 def _fallback_report(vision_result: Dict) -> Dict:
-    """Gemini hata verdiğinde temel mantıkla rapor üret."""
+    """Gemini erişilemediğinde temel mantıkla rapor üret."""
     damaged = vision_result.get("damaged", 0)
     fire_rate = vision_result.get("fire_rate", 0)
 
@@ -102,15 +85,9 @@ def _fallback_report(vision_result: Dict) -> Dict:
     }
 
 
-# Test için: python -m backend.agents.quality_agent
+# Test için
 if __name__ == "__main__":
-    test_cases = [
-        {"total_items": 12, "fresh": 8, "damaged": 4, "fire_rate": 0.33, "estimated_loss_tl": 45.50},
-        {"total_items": 20, "fresh": 19, "damaged": 1, "fire_rate": 0.05, "estimated_loss_tl": 12.0},
-        {"total_items": 8, "fresh": 2, "damaged": 6, "fire_rate": 0.75, "estimated_loss_tl": 90.0},
-    ]
-    for i, case in enumerate(test_cases, 1):
-        print(f"\n=== Test {i} ===")
-        print(f"Girdi: {case}")
-        result = analyze_quality(case)
-        print(f"Çıktı: {json.dumps(result, indent=2, ensure_ascii=False)}")
+    import json
+    test = {"total_items": 12, "fresh": 8, "damaged": 4, "fire_rate": 0.33, "estimated_loss_tl": 45.50}
+    result = analyze_quality(test)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
