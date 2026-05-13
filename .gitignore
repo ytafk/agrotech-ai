@@ -225,3 +225,6 @@ data/sample_images/
 *.pt
 runs/
 .vs/
+
+# YOLO model ağırlıkları (büyük dosyalar, repo'ya gitmez)
+models/*.pt
